@@ -30,6 +30,7 @@ from pyslam.utilities.utils_geom import poseRt, is_rotation_matrix, closest_rota
 from pyslam.utilities.timer import TimerFps
 from pyslam.io.ground_truth import GroundTruth
 from pyslam.slam.visual_odometry_base import VoState, VisualOdometryBase
+from pyslam.tracking.track_manager import TrackManager
 
 
 kVerbose = True
@@ -64,6 +65,7 @@ class VisualOdometryEducational(VisualOdometryBase):
         self.des_cur = None  # current descriptors
 
         self.feature_tracker: FeatureTracker = feature_tracker
+        self.track_manager = TrackManager()  # Track manager for feature longevity
 
         self.pose_estimation_inliers = None
 
@@ -167,6 +169,13 @@ class VisualOdometryEducational(VisualOdometryBase):
             self.prev_image, self.cur_image, self.kps_ref, self.des_ref
         )
         self.timer_feat.refresh()
+        # update track manager with new matches
+        self.track_manager.update(
+            self.track_result.idxs_ref,
+            self.track_result.idxs_cur,
+            self.track_result.kps_cur,
+            frame_id
+        )
         # estimate pose
         self.timer_pose_est.start()
         R, t = self.estimatePose(

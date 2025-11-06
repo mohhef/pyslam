@@ -1,15 +1,15 @@
 DATASET:
-  # select your dataset (decomment only one of the following lines) 
-  #type: EUROC_DATASET  
-  #type: KITTI_DATASET
+  # select your dataset (decomment only one of the following lines)
+  #type: EUROC_DATASET
+  type: KITTI_DATASET
   #type: TUM_DATASET
   #type: ICL_NUIM_DATASET
   #type: REPLICA_DATASET
   #type: TARTANAIR_DATASET
-  type: VIDEO_DATASET
+  #type: VIDEO_DATASET
   #type: SCANNET_DATASET
   #type: ROS1BAG_DATASET
-  #type: ROS2BAG_DATASET  
+  #type: ROS2BAG_DATASET
   #type: FOLDER_DATASET
   #type: LIVE_DATASET  # Not recommended for current development stage
 
@@ -17,13 +17,21 @@ DATASET:
 KITTI_DATASET:
   type: kitti
   sensor_type: stereo # Here, 'sensor_type' can be 'mono' or 'stereo'
-  base_path: /home/luigi/Work/datasets/rgbd_datasets/kitti_color/dataset
   #
-  # name: '06'
-  # settings: settings/KITTI04-12.yaml # do not forget to correctly set the corresponding camera settings file 
+  # Option 1: Clean baseline sequence 04
+  # base_path: /home/mohhef/projects/SLAMWeatherBench/results/kitti_rain_physics_full
+  # name: '04'
+  # settings: settings/KITTI04-12.yaml
   #
-  name: '00'
-  settings: settings/KITTI00-02.yaml # do not forget to correctly set the corresponding camera settings file 
+  # Option 2: Rain perturbed sequence 04
+  # base_path: /home/mohhef/projects/SLAMWeatherBench/results/kitti_rain_physics_full
+  # name: '04'
+  # settings: settings/KITTI04-12.yaml
+  #
+  # Option 3: Fog perturbed sequence 04
+  base_path: /home/mohhef/projects/SLAMWeatherBench/results/kitti_rain_physics_full
+  name: '04'
+  settings: settings/KITTI04-12.yaml
   #
   is_color: True # do you have the color images for the kitti dataset? (image2 and image3 folders)
   groundtruth_file: auto
@@ -120,11 +128,11 @@ VIDEO_DATASET:
   type: video
   sensor_type: mono   # Here, 'sensor_type' can be only 'mono' 
   #
-  # base_path: ./data/videos/kitti00
+  # base_path: /home/mohhef/projects/SLAMWeatherBench/results/kitti_rain_physics_full
   # settings: settings/KITTI00-02.yaml
   # name: video.mp4
   #
-  base_path: ./data/videos/kitti06
+  base_path: /home/mohhef/projects/SLAMWeatherBench/results/kitti_rain_physics_full
   settings: settings/KITTI04-12.yaml
   name: video_color.mp4
   #
@@ -139,7 +147,7 @@ VIDEO_DATASET:
 FOLDER_DATASET:
   type: folder 
   sensor_type: mono   # Here, 'sensor_type' can be only 'mono' 
-  base_path: /home/luigi/Work/rgbd_datasets2/kitti/dataset/sequences/00/image_0/
+  base_path: /home/mohhef/projects/SLAMWeatherBench/results/kitti_rain_physics_full
   # 'name' is used for specifying a glob pattern, e.g. *png, *jpeg, etc...
   name: '*png'  
   settings: settings/KITTI00-02.yaml

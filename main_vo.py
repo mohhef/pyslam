@@ -24,6 +24,7 @@ import os
 import math
 import time
 import platform
+import json
 
 from pyslam.config import Config
 
@@ -57,7 +58,7 @@ kRootFolder = kScriptFolder
 kResultsFolder = kRootFolder + "/results"
 
 
-kUseRerun = True
+kUseRerun = False
 # check rerun does not have issues
 if kUseRerun and not Rerun.is_ok:
     kUseRerun = False
@@ -106,7 +107,13 @@ if __name__ == "__main__":
     # select your tracker configuration (see the file feature_tracker_configs.py)
     # LK_SHI_TOMASI, LK_FAST
     # SHI_TOMASI_ORB, FAST_ORB, ORB, BRISK, AKAZE, FAST_FREAK, SIFT, ROOT_SIFT, SURF, SUPERPOINT, LIGHTGLUE, XFEAT, XFEAT_XFEAT, LOFTR
-    tracker_config = FeatureTrackerConfigs.LK_SHI_TOMASI
+
+    # Use tracker from config if specified, otherwise default to LK_SHI_TOMASI
+    if config.feature_tracker_config_name:
+        tracker_config = getattr(FeatureTrackerConfigs, config.feature_tracker_config_name)
+    else:
+        tracker_config = FeatureTrackerConfigs.LK_SHI_TOMASI
+
     tracker_config["num_features"] = num_features
 
     feature_tracker = feature_tracker_factory(**tracker_config)
@@ -146,6 +153,11 @@ if __name__ == "__main__":
     is_draw_matched_points = True
     matched_points_plt = factory_plot2d(xlabel="img id", ylabel="# matches", title="# matches")
 
+    # Storage for post-processing track longevity visualization
+    all_kps = []  # Store keypoints for each frame
+    all_des = []  # Store descriptors for each frame
+    all_images = []  # Store images for descriptor computation if needed
+
     img_id = 0
     while True:
 
@@ -164,6 +176,30 @@ if __name__ == "__main__":
         if img is not None:
 
             vo.track(img, img_right, depth, img_id, timestamp)  # main VO function
+
+            # Store data for post-processing track longevity analysis
+            # Store the grayscale image
+            if hasattr(vo, 'cur_image') and vo.cur_image is not None:
+                all_images.append(vo.cur_image.copy())
+            else:
+                all_images.append(None)
+
+            # Store keypoints and descriptors
+            # On first frame: kps_ref/des_ref are set, kps_cur/des_cur are not
+            # On subsequent frames: kps_cur/des_cur are set
+            kps_to_store = None
+            des_to_store = None
+
+            if hasattr(vo, 'kps_cur') and vo.kps_cur is not None:
+                kps_to_store = vo.kps_cur.copy()
+                des_to_store = vo.des_cur.copy() if (hasattr(vo, 'des_cur') and vo.des_cur is not None) else None
+            elif hasattr(vo, 'kps_ref') and vo.kps_ref is not None:
+                # First frame - use ref instead of cur
+                kps_to_store = vo.kps_ref.copy()
+                des_to_store = vo.des_ref.copy() if (hasattr(vo, 'des_ref') and vo.des_ref is not None) else None
+
+            all_kps.append(kps_to_store)
+            all_des.append(des_to_store)
 
             if (
                 len(vo.traj3d_est) > 1
@@ -244,6 +280,7 @@ if __name__ == "__main__":
                         matched_points_plt.draw(matched_kps_signal, "# matches", color="b")
                         matched_points_plt.draw(inliers_signal, "# inliers", color="g")
 
+
             # draw camera image
             if not is_draw_with_rerun:
                 cv2.imshow("Camera", vo.draw_img)
@@ -269,11 +306,194 @@ if __name__ == "__main__":
     # print('press a key in order to exit...')
     # cv2.waitKey(0)
 
+    # Post-processing: Build feature tracks for longevity visualization
+    print("\n=== Building feature tracks for longevity analysis ===")
+    if len(all_kps) > 0 and len(all_images) > 0:
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # Use non-interactive backend for saving
+            import matplotlib.pyplot as plt
+            from tqdm import tqdm
+
+            # Check if descriptors are missing (e.g., LK tracker doesn't compute them)
+            descriptors_missing = all(des is None for des in all_des)
+
+            if descriptors_missing:
+                print("Descriptors not available (optical flow tracker). Computing ORB descriptors for longevity analysis...")
+                orb = cv2.ORB_create(nfeatures=2000)
+
+                for i in tqdm(range(len(all_images)), desc="Computing descriptors"):
+                    if all_images[i] is not None and all_kps[i] is not None and len(all_kps[i]) > 0:
+                        # Convert keypoints array to cv2.KeyPoint objects
+                        kps_cv = [cv2.KeyPoint(x=float(kp[0]), y=float(kp[1]), size=20) for kp in all_kps[i]]
+                        # Compute descriptors for these keypoints
+                        _, des = orb.compute(all_images[i], kps_cv)
+                        all_des[i] = des
+                    else:
+                        all_des[i] = None
+
+            # Use BFMatcher for track building (NightHawk approach)
+            # Determine correct norm based on descriptor type
+            # Binary descriptors (ORB, BRISK, AKAZE) use HAMMING
+            # Float descriptors (SIFT, SURF, ROOT_SIFT) use L2
+
+            # Find first non-None descriptor to check type
+            first_valid_des = None
+            for des in all_des:
+                if des is not None:
+                    first_valid_des = des
+                    break
+
+            # If all descriptors are still None after fallback, we can't build tracks
+            if first_valid_des is None:
+                print("ERROR: No valid descriptors found. Cannot build tracks.")
+                print("This can happen if:")
+                print("  1. The tracker doesn't produce descriptors (e.g., LK)")
+                print("  2. The fallback descriptor computation failed")
+                print("  3. No features were detected in any frame")
+                raise ValueError("Cannot build tracks without descriptors")
+
+            if descriptors_missing or first_valid_des.dtype == np.uint8:
+                bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+                print("Using NORM_HAMMING for binary descriptors")
+            else:
+                bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+                print("Using NORM_L2 for float descriptors")
+
+            tracks = {}
+            next_track_id = 0
+
+            # Convert descriptors to proper type if needed
+            for i in range(len(all_des)):
+                if all_des[i] is not None:
+                    # ORB descriptors are uint8, don't convert to float32
+                    if all_des[i].dtype == np.uint8:
+                        pass  # Keep as uint8 for binary descriptors
+                    elif all_des[i].dtype != np.float32:
+                        all_des[i] = all_des[i].astype(np.float32)
+
+            # Process each frame as a starting point
+            for start_frame in tqdm(range(len(all_kps) - 1), desc="Building tracks"):
+                if all_kps[start_frame] is None or all_des[start_frame] is None:
+                    continue
+
+                # Initialize new tracks for features in this frame
+                current_features = {i: next_track_id + i for i in range(len(all_kps[start_frame]))}
+
+                # Add new features to tracks
+                for i in range(len(all_kps[start_frame])):
+                    tracks[next_track_id + i] = [(start_frame, i)]
+
+                next_track_id += len(all_kps[start_frame])
+
+                # Track these features in subsequent frames
+                prev_descriptors = all_des[start_frame]
+                prev_features = current_features
+
+                if prev_descriptors is None or len(prev_descriptors) == 0:
+                    continue
+
+                # Track forward through subsequent frames
+                for frame_idx in range(start_frame + 1, len(all_kps)):
+                    current_descriptors = all_des[frame_idx]
+
+                    if current_descriptors is None or len(current_descriptors) == 0:
+                        continue
+
+                    # No need to convert ORB descriptors - they stay as uint8 for HAMMING distance
+
+                    # Match descriptors with Lowe's ratio test
+                    matches = bf.knnMatch(prev_descriptors, current_descriptors, k=2)
+
+                    good_matches = []
+                    for match in matches:
+                        if len(match) >= 2:
+                            m, n = match[:2]
+                            if m.distance < 0.75 * n.distance:
+                                good_matches.append(m)
+
+                    # Update tracks with good matches
+                    new_features = {}
+                    for match in good_matches:
+                        query_idx = match.queryIdx  # Previous frame feature
+                        train_idx = match.trainIdx  # Current frame feature
+
+                        if query_idx in prev_features:
+                            track_id = prev_features[query_idx]
+                            tracks[track_id].append((frame_idx, train_idx))
+                            new_features[train_idx] = track_id
+
+                    # Prepare for next frame
+                    prev_descriptors = current_descriptors
+                    prev_features = new_features
+
+            # Calculate track statistics
+            track_lengths = [len(track) for track in tracks.values()]
+            mean_track_length = np.mean(track_lengths) if track_lengths else 0.0
+
+            print(f"Total tracks created: {len(tracks)}")
+            print(f"Mean track length: {mean_track_length:.2f} frames")
+
+            # Generate longevity plot
+            print("Generating longevity plot...")
+            plt.figure(figsize=(24, 12))
+            for track_id, track in tqdm(tracks.items(), desc="Plotting tracks"):
+                frames = [f for f, _ in track]
+                plt.plot([track_id] * len(frames), frames, marker='o', linestyle='-', lw=0.05)
+
+            plt.xlabel('Feature Track ID')
+            plt.ylabel('Frame ID')
+            plt.title(f'Feature Tracks Over Multiple Frames - Mean Track Length: {mean_track_length:.2f}')
+            plt.gca().invert_yaxis()  # Frame 0 at top
+
+            # Determine sequence name from config for filename
+            sequence_name = config.dataset_settings.get('name', 'unknown')
+            if not os.path.exists(kResultsFolder):
+                os.makedirs(kResultsFolder, exist_ok=True)
+
+            longevity_plot_file = f"{kResultsFolder}/track_longevity_{sequence_name}.png"
+            print(f"Saving track longevity plot to {longevity_plot_file}")
+            plt.savefig(longevity_plot_file, dpi=150, bbox_inches='tight')
+            plt.close()
+
+            print("=== Track longevity analysis complete ===\n")
+
+        except Exception as e:
+            print(f"Warning: Could not complete track longevity analysis: {e}")
+            import traceback
+            traceback.print_exc()
+
     if is_draw_traj_img:
         if not os.path.exists(kResultsFolder):
             os.makedirs(kResultsFolder, exist_ok=True)
         print(f"saving {kResultsFolder}/map.png")
         cv2.imwrite(f"{kResultsFolder}/map.png", traj_img)
+
+    # Save track longevity data and statistics
+    if hasattr(vo, 'track_manager'):
+        track_data = vo.track_manager.export_tracks()
+        stats = track_data['statistics']
+
+        # Determine sequence name from config for filename
+        sequence_name = config.dataset_settings.get('name', 'unknown')
+        track_data_file = f"{kResultsFolder}/tracks_{sequence_name}.json"
+
+        print(f"Saving track data to {track_data_file}")
+        with open(track_data_file, 'w') as f:
+            json.dump(track_data, f, indent=2)
+
+        # Print summary statistics
+        print("\n=== Feature Tracking Statistics ===")
+        print(f"Total tracks: {stats['total_tracks']}")
+        print(f"Mean track length: {stats['mean_track_length']:.2f} frames")
+        print(f"Median track length: {stats['median_track_length']:.2f} frames")
+        print(f"Std track length: {stats['std_track_length']:.2f} frames")
+        print(f"Max track length: {stats['max_track_length']} frames")
+        print(f"Min track length: {stats['min_track_length']} frames")
+        print(f"Total frames processed: {track_data['total_frames']}")
+        print("===================================\n")
+
+
     if plt3d:
         plt3d.quit()
     if viewer3D:
