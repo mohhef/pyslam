@@ -25,6 +25,7 @@ import math
 import time
 import platform
 import json
+import argparse
 
 from pyslam.config import Config
 
@@ -55,7 +56,7 @@ from pyslam.utilities.utils_sys import Printer
 kScriptPath = os.path.realpath(__file__)
 kScriptFolder = os.path.dirname(kScriptPath)
 kRootFolder = kScriptFolder
-kResultsFolder = kRootFolder + "/results"
+kResultsFolder = kRootFolder + "/results"  # Default, will be overridden by config if available
 
 
 kUseRerun = False
@@ -90,7 +91,29 @@ def factory_plot2d(*args, **kwargs):
 
 if __name__ == "__main__":
 
-    config = Config()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c",
+        "--config_path",
+        type=str,
+        default=None,
+        help="Path to custom config.yaml file",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run in headless mode (no GUI)",
+    )
+    args = parser.parse_args()
+
+    if args.config_path:
+        config = Config(args.config_path)
+    else:
+        config = Config()
+
+    # Use SAVE_TRAJECTORY output_folder for plots if available
+    if hasattr(config, 'trajectory_saving_settings') and config.trajectory_saving_settings:
+        kResultsFolder = config.trajectory_saving_settings.get('output_folder', kResultsFolder)
 
     dataset = dataset_factory(config)
 
@@ -133,25 +156,27 @@ if __name__ == "__main__":
     half_traj_img_size = int(0.5 * traj_img_size)
     draw_scale = 1
 
-    plt3d = None
-
     viewer3D = None
+    plt3d = None
+    err_plt = None
+    matched_points_plt = None
 
-    is_draw_3d = True
-    is_draw_with_rerun = kUseRerun
-    if is_draw_with_rerun:
-        Rerun.init_vo()
-    else:
-        if kUsePangolin:
-            viewer3D = Viewer3D(scale=dataset.scale_viewer_3d * 10)
+    is_draw_3d = not args.headless
+    is_draw_err = not args.headless
+    is_draw_matched_points = not args.headless
+    is_draw_with_rerun = kUseRerun and not args.headless
+
+    if not args.headless:
+        if is_draw_with_rerun:
+            Rerun.init_vo()
         else:
-            plt3d = Mplot3d(title="3D trajectory")
+            if kUsePangolin:
+                viewer3D = Viewer3D(scale=dataset.scale_viewer_3d * 10)
+            else:
+                plt3d = Mplot3d(title="3D trajectory")
 
-    is_draw_err = True
-    err_plt = factory_plot2d(xlabel="img id", ylabel="m", title="error")
-
-    is_draw_matched_points = True
-    matched_points_plt = factory_plot2d(xlabel="img id", ylabel="# matches", title="# matches")
+        err_plt = factory_plot2d(xlabel="img id", ylabel="m", title="error")
+        matched_points_plt = factory_plot2d(xlabel="img id", ylabel="# matches", title="# matches")
 
     # Storage for post-processing track longevity visualization
     all_kps = []  # Store keypoints for each frame
@@ -242,7 +267,7 @@ if __name__ == "__main__":
 
                     if is_draw_with_rerun:
                         Rerun.log_img_seq("trajectory_img/2d", img_id, traj_img)
-                    else:
+                    elif not args.headless:
                         cv2.imshow("Trajectory", traj_img)
 
                 if is_draw_with_rerun:
@@ -282,25 +307,28 @@ if __name__ == "__main__":
 
 
             # draw camera image
-            if not is_draw_with_rerun:
+            if not is_draw_with_rerun and not args.headless:
                 cv2.imshow("Camera", vo.draw_img)
 
         else:
             time.sleep(0.1)
+            if args.headless:
+                break  # exit from the loop if headless and no more images
 
-        # get keys
-        key = matched_points_plt.get_key() if matched_points_plt is not None else None
-        if key == "" or key is None:
-            key = err_plt.get_key() if err_plt is not None else None
-        if key == "" or key is None:
-            key = plt3d.get_key() if plt3d is not None else None
+        if not args.headless:
+            # get keys
+            key = matched_points_plt.get_key() if matched_points_plt is not None else None
+            if key == "" or key is None:
+                key = err_plt.get_key() if err_plt is not None else None
+            if key == "" or key is None:
+                key = plt3d.get_key() if plt3d is not None else None
 
-        # press 'q' to exit!
-        key_cv = cv2.waitKey(1) & 0xFF
-        if key == "q" or (key_cv == ord("q")):
-            break
-        if viewer3D and viewer3D.is_closed():
-            break
+            # press 'q' to exit!
+            key_cv = cv2.waitKey(1) & 0xFF
+            if key == "q" or (key_cv == ord("q")):
+                break
+            if viewer3D and viewer3D.is_closed():
+                break
         img_id += 1
 
     # print('press a key in order to exit...')
@@ -372,60 +400,78 @@ if __name__ == "__main__":
                     elif all_des[i].dtype != np.float32:
                         all_des[i] = all_des[i].astype(np.float32)
 
-            # Process each frame as a starting point
-            for start_frame in tqdm(range(len(all_kps) - 1), desc="Building tracks"):
-                if all_kps[start_frame] is None or all_des[start_frame] is None:
+            # Build tracks sequentially frame-by-frame
+            # Each feature gets ONE unique track ID for its entire lifetime
+            # active_tracks: maps feature index in current frame -> track_id
+            active_tracks = {}
+
+            for frame_idx in tqdm(range(len(all_kps)), desc="Building tracks"):
+                if all_kps[frame_idx] is None or all_des[frame_idx] is None:
+                    active_tracks = {}  # Reset if frame is invalid
                     continue
 
-                # Initialize new tracks for features in this frame
-                current_features = {i: next_track_id + i for i in range(len(all_kps[start_frame]))}
+                current_descriptors = all_des[frame_idx]
+                num_features = len(all_kps[frame_idx])
 
-                # Add new features to tracks
-                for i in range(len(all_kps[start_frame])):
-                    tracks[next_track_id + i] = [(start_frame, i)]
-
-                next_track_id += len(all_kps[start_frame])
-
-                # Track these features in subsequent frames
-                prev_descriptors = all_des[start_frame]
-                prev_features = current_features
-
-                if prev_descriptors is None or len(prev_descriptors) == 0:
+                if frame_idx == 0:
+                    # First frame: create new track for each feature
+                    for i in range(num_features):
+                        tracks[next_track_id] = [(frame_idx, i)]
+                        active_tracks[i] = next_track_id
+                        next_track_id += 1
                     continue
 
-                # Track forward through subsequent frames
-                for frame_idx in range(start_frame + 1, len(all_kps)):
-                    current_descriptors = all_des[frame_idx]
+                # Get previous frame's descriptors
+                prev_frame_idx = frame_idx - 1
+                prev_descriptors = all_des[prev_frame_idx]
 
-                    if current_descriptors is None or len(current_descriptors) == 0:
+                if prev_descriptors is None or len(prev_descriptors) == 0 or len(active_tracks) == 0:
+                    # No previous descriptors or tracks, start fresh
+                    active_tracks = {}
+                    for i in range(num_features):
+                        tracks[next_track_id] = [(frame_idx, i)]
+                        active_tracks[i] = next_track_id
+                        next_track_id += 1
+                    continue
+
+                # Match previous frame to current frame
+                matches = bf.knnMatch(prev_descriptors, current_descriptors, k=2)
+
+                # Apply Lowe's ratio test
+                good_matches = []
+                for match in matches:
+                    if len(match) >= 2:
+                        m, n = match[:2]
+                        if m.distance < 0.75 * n.distance:
+                            good_matches.append(m)
+
+                # Track which current features have been matched
+                matched_current_features = set()
+                new_active_tracks = {}
+
+                for match in good_matches:
+                    prev_feat_idx = match.queryIdx
+                    curr_feat_idx = match.trainIdx
+
+                    # Avoid double-matching the same current feature
+                    if curr_feat_idx in matched_current_features:
                         continue
 
-                    # No need to convert ORB descriptors - they stay as uint8 for HAMMING distance
+                    if prev_feat_idx in active_tracks:
+                        # Extend existing track
+                        track_id = active_tracks[prev_feat_idx]
+                        tracks[track_id].append((frame_idx, curr_feat_idx))
+                        new_active_tracks[curr_feat_idx] = track_id
+                        matched_current_features.add(curr_feat_idx)
 
-                    # Match descriptors with Lowe's ratio test
-                    matches = bf.knnMatch(prev_descriptors, current_descriptors, k=2)
+                # Create new tracks for unmatched features in current frame
+                for i in range(num_features):
+                    if i not in matched_current_features:
+                        tracks[next_track_id] = [(frame_idx, i)]
+                        new_active_tracks[i] = next_track_id
+                        next_track_id += 1
 
-                    good_matches = []
-                    for match in matches:
-                        if len(match) >= 2:
-                            m, n = match[:2]
-                            if m.distance < 0.75 * n.distance:
-                                good_matches.append(m)
-
-                    # Update tracks with good matches
-                    new_features = {}
-                    for match in good_matches:
-                        query_idx = match.queryIdx  # Previous frame feature
-                        train_idx = match.trainIdx  # Current frame feature
-
-                        if query_idx in prev_features:
-                            track_id = prev_features[query_idx]
-                            tracks[track_id].append((frame_idx, train_idx))
-                            new_features[train_idx] = track_id
-
-                    # Prepare for next frame
-                    prev_descriptors = current_descriptors
-                    prev_features = new_features
+                active_tracks = new_active_tracks
 
             # Calculate track statistics
             track_lengths = [len(track) for track in tracks.values()]
@@ -454,6 +500,83 @@ if __name__ == "__main__":
             longevity_plot_file = f"{kResultsFolder}/track_longevity_{sequence_name}.png"
             print(f"Saving track longevity plot to {longevity_plot_file}")
             plt.savefig(longevity_plot_file, dpi=150, bbox_inches='tight')
+            plt.close()
+
+            # Generate histogram of track lengths
+            print("Generating track length histogram...")
+            plt.figure(figsize=(12, 8))
+            max_length = max(track_lengths) if track_lengths else 1
+
+            # Use 95th percentile as x-axis limit to focus on where most data is
+            percentile_95 = np.percentile(track_lengths, 95) if track_lengths else max_length
+            x_limit = int(min(max_length, max(percentile_95 * 1.2, mean_track_length * 3)))
+
+            bins = np.arange(1, x_limit + 2, 1)  # Bins of width 1 frame, starting from 1
+            plt.hist(track_lengths, bins=bins, edgecolor='black', alpha=0.7)
+            plt.axvline(mean_track_length, color='r', linestyle='--', linewidth=2, label=f'Mean: {mean_track_length:.2f}')
+            plt.xlabel('Track Length (frames)')
+            plt.ylabel('Number of Tracks')
+            plt.title(f'Distribution of Feature Track Lengths - {sequence_name}')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.xlim(1, x_limit)
+            # Force integer ticks on x-axis
+            plt.gca().xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+            histogram_file = f"{kResultsFolder}/track_histogram_{sequence_name}.png"
+            print(f"Saving track histogram to {histogram_file}")
+            plt.savefig(histogram_file, dpi=150, bbox_inches='tight')
+            plt.close()
+
+            # Generate survival curve
+            # For each track length X, calculate % of tracks that survived at least X frames
+            print("Generating survival curve...")
+            plt.figure(figsize=(12, 8))
+
+            total_tracks = len(track_lengths)
+
+            # Calculate survival: for each possible length, what % of tracks >= that length
+            unique_lengths = np.arange(1, max_length + 1)
+            survival_pct = []
+            for length in unique_lengths:
+                num_surviving = np.sum(np.array(track_lengths) >= length)
+                survival_pct.append(100.0 * num_surviving / total_tracks)
+
+            # Find where survival drops below 5% to set x-axis limit
+            survival_arr = np.array(survival_pct)
+            idx_5pct = np.where(survival_arr <= 5)[0]
+            if len(idx_5pct) > 0:
+                x_limit_survival = int(unique_lengths[idx_5pct[0]] * 1.2)
+            else:
+                x_limit_survival = max_length
+            x_limit_survival = max(x_limit_survival, int(mean_track_length * 3))
+
+            plt.plot(unique_lengths, survival_pct, linewidth=2, color='blue')
+            plt.fill_between(unique_lengths, survival_pct, alpha=0.3)
+            plt.xlabel('Track Age (frames)')
+            plt.ylabel('% of Tracks Surviving')
+            plt.title(f'Track Survival Curve - {sequence_name}\nMean: {mean_track_length:.2f}')
+            plt.grid(True, alpha=0.3)
+            plt.xlim(1, x_limit_survival)
+            plt.ylim(0, 100)
+
+            # Add annotation for 2 frames survival
+            if len(survival_arr) >= 2:
+                pct_at_2 = survival_arr[1]  # Index 1 = 2 frames (since unique_lengths starts at 1)
+                plt.axhline(pct_at_2, color='r', linestyle=':', alpha=0.5)
+                plt.axvline(2, color='r', linestyle=':', alpha=0.5)
+                plt.annotate(f'{pct_at_2:.1f}% survive 2 frames',
+                           xy=(2, pct_at_2),
+                           xytext=(2 + x_limit_survival*0.1, pct_at_2 + 5),
+                           arrowprops=dict(arrowstyle='->', color='red'),
+                           fontsize=10, color='red')
+
+            # Force integer ticks on x-axis
+            plt.gca().xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+            survival_file = f"{kResultsFolder}/track_survival_{sequence_name}.png"
+            print(f"Saving survival curve to {survival_file}")
+            plt.savefig(survival_file, dpi=150, bbox_inches='tight')
             plt.close()
 
             print("=== Track longevity analysis complete ===\n")
@@ -503,4 +626,5 @@ if __name__ == "__main__":
     if matched_points_plt:
         matched_points_plt.quit()
 
-    cv2.destroyAllWindows()
+    if not args.headless:
+        cv2.destroyAllWindows()
