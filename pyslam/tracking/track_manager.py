@@ -79,12 +79,6 @@ class TrackManager:
                 new_track_id = self._create_track(kps_cur[i], frame_id)
                 new_active_track_ids[i] = new_track_id
 
-        # Mark tracks that were lost (not in new_active_track_ids)
-        lost_track_ids = set(self.ref_track_ids) - set(new_active_track_ids)
-        for track_id in lost_track_ids:
-            if track_id in self.tracks and track_id != -1:
-                self.tracks[track_id]['is_active'] = False
-
         # Update reference for next frame
         self.ref_track_ids = new_active_track_ids
         self.active_track_ids = [tid for tid in new_active_track_ids if tid != -1]
@@ -117,8 +111,7 @@ class TrackManager:
             'age': 1,
             'first_frame': frame_id,
             'last_frame': frame_id,
-            'positions': [(float(kp[0]), float(kp[1]))],
-            'is_active': True
+            'positions': [(float(kp[0]), float(kp[1]))]
         }
 
         return track_id
@@ -205,9 +198,7 @@ class TrackManager:
             export_data['tracks'][str(track_id)] = {
                 'age': track_info['age'],
                 'first_frame': track_info['first_frame'],
-                'last_frame': track_info['last_frame'],
-                'num_observations': len(track_info['positions']),
-                'is_active': track_info['is_active']
+                'last_frame': track_info['last_frame']
             }
 
         return export_data
