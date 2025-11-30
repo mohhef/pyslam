@@ -427,26 +427,34 @@ if __name__ == "__main__":
         online_trajectory_writer.close_file()
 
     # compute metrics on the estimated final trajectory
-    try:
-        est_poses, timestamps, ids = slam.get_final_trajectory()
-        is_final = not dataset.is_ok
-        assoc_timestamps, assoc_est_poses, assoc_gt_poses = find_poses_associations(
-            timestamps, est_poses, gt_timestamps, gt_poses
-        )
-        ape_stats, T_gt_est = eval_ate(
-            poses_est=assoc_est_poses,
-            poses_gt=assoc_gt_poses,
-            frame_ids=ids,
-            curr_frame_id=img_id,
-            is_final=is_final,
-            is_monocular=is_monocular,
-            save_dir=metrics_save_dir,
-        )
-        Printer.green(f"EVO stats: {json.dumps(ape_stats, indent=4)}")
+    slam_initialized = slam.map.num_keyframes() > 0
 
-        if final_trajectory_writer:
-            final_trajectory_writer.write_full_trajectory(est_poses, timestamps)
-            final_trajectory_writer.close_file()
+    try:
+        # Check if SLAM has any keyframes before trying to get trajectory
+        if not slam_initialized:
+            print("WARNING: SLAM failed to initialize - no keyframes created")
+            print("This can happen with heavily perturbed images (rain/fog)")
+            print("Skipping trajectory metrics, but will still attempt track analysis...")
+        else:
+            est_poses, timestamps, ids = slam.get_final_trajectory()
+            is_final = not dataset.is_ok
+            assoc_timestamps, assoc_est_poses, assoc_gt_poses = find_poses_associations(
+                timestamps, est_poses, gt_timestamps, gt_poses
+            )
+            ape_stats, T_gt_est = eval_ate(
+                poses_est=assoc_est_poses,
+                poses_gt=assoc_gt_poses,
+                frame_ids=ids,
+                curr_frame_id=img_id,
+                is_final=is_final,
+                is_monocular=is_monocular,
+                save_dir=metrics_save_dir,
+            )
+            Printer.green(f"EVO stats: {json.dumps(ape_stats, indent=4)}")
+
+            if final_trajectory_writer:
+                final_trajectory_writer.write_full_trajectory(est_poses, timestamps)
+                final_trajectory_writer.close_file()
 
         other_metrics_file_path = os.path.join(metrics_save_dir, "other_metrics_info.txt")
         with open(other_metrics_file_path, "w") as f:
@@ -454,8 +462,185 @@ if __name__ == "__main__":
             f.write(f"num_processed_frames: {num_frames}\n")
             f.write(f"num_lost_frames: {num_tracking_lost}\n")
             f.write(f"percent_lost: {num_tracking_lost/num_total_frames*100:.2f}\n")
+            f.write(f"slam_initialized: {slam_initialized}\n")
 
-        evaluate_semantic_mapping(slam, dataset, metrics_save_dir)
+        if slam_initialized:
+            evaluate_semantic_mapping(slam, dataset, metrics_save_dir)
+
+        # ============================================================
+        # Feature Track Longevity Analysis
+        # ============================================================
+        print("\n=== Building feature track statistics from SLAM map points ===")
+        sequence_name = config.dataset_settings.get('name', 'unknown')
+
+        try:
+            map_points = slam.map.get_points()
+            print(f"Total map points: {len(map_points)}")
+
+            if len(map_points) == 0:
+                print("No map points found - SLAM failed to create any 3D points")
+                print("Recording this as a complete SLAM failure")
+                # Save failure record
+                track_stats = {
+                    'slam_initialized': False,
+                    'total_map_points': 0,
+                    'total_valid_tracks': 0,
+                    'mean_track_length': 0,
+                    'num_total_frames': num_total_frames,
+                    'num_processed_frames': num_frames,
+                    'failure_reason': 'No map points created'
+                }
+                track_stats_file = os.path.join(metrics_save_dir, f"track_stats_{sequence_name}.json")
+                with open(track_stats_file, 'w') as f:
+                    json.dump(track_stats, f, indent=2)
+                print(f"Saved failure stats to {track_stats_file}")
+                raise ValueError("No map points to analyze")
+
+            # Calculate track lengths from frame_views
+            track_lengths = []
+            for point in map_points:
+                if not point.is_bad:
+                    frame_views = point.frame_views()
+                    if len(frame_views) > 0:
+                        track_lengths.append(len(frame_views))
+
+            if len(track_lengths) > 0:
+                track_lengths = np.array(track_lengths)
+                mean_track_length = np.mean(track_lengths)
+                median_track_length = np.median(track_lengths)
+                max_track_length = np.max(track_lengths)
+                min_track_length = np.min(track_lengths)
+                std_track_length = np.std(track_lengths)
+
+                print(f"Total valid tracks: {len(track_lengths)}")
+                print(f"Mean track length: {mean_track_length:.2f} frames")
+                print(f"Median track length: {median_track_length:.2f} frames")
+                print(f"Std track length: {std_track_length:.2f} frames")
+                print(f"Max track length: {max_track_length} frames")
+                print(f"Min track length: {min_track_length} frames")
+
+                # Generate longevity plot (track ID vs frame)
+                print("Generating longevity plot...")
+                plt.figure(figsize=(24, 12))
+
+                # Build track data: for each map point, get the frames it was seen in
+                track_id = 0
+                for point in map_points:
+                    if not point.is_bad:
+                        frame_views = point.frame_views()
+                        if len(frame_views) > 0:
+                            frames = sorted([f.id for f, _ in frame_views])
+                            plt.plot([track_id] * len(frames), frames, marker='o', linestyle='-', lw=0.05, markersize=1)
+                            track_id += 1
+
+                plt.xlabel('Feature Track ID')
+                plt.ylabel('Frame ID')
+                plt.title(f'Feature Tracks Over Multiple Frames (SLAM) - Mean Track Length: {mean_track_length:.2f}')
+                plt.gca().invert_yaxis()  # Frame 0 at top
+
+                longevity_file = os.path.join(metrics_save_dir, f"track_longevity_{sequence_name}.png")
+                print(f"Saving track longevity plot to {longevity_file}")
+                plt.savefig(longevity_file, dpi=150, bbox_inches='tight')
+                plt.close()
+
+                # Generate histogram of track lengths
+                print("Generating track length histogram...")
+                max_length = int(max_track_length)
+
+                # Use 95th percentile as x-axis limit to focus on where most data is
+                percentile_95 = np.percentile(track_lengths, 95)
+                x_limit = int(min(max_length, max(percentile_95 * 1.2, mean_track_length * 3)))
+
+                plt.figure(figsize=(12, 8))
+                bins = np.arange(1, x_limit + 2, 1)
+                plt.hist(track_lengths, bins=bins, edgecolor='black', alpha=0.7)
+                plt.axvline(mean_track_length, color='r', linestyle='--', linewidth=2, label=f'Mean: {mean_track_length:.2f}')
+                plt.axvline(median_track_length, color='g', linestyle='--', linewidth=2, label=f'Median: {median_track_length:.2f}')
+                plt.xlabel('Track Length (frames)')
+                plt.ylabel('Number of Tracks')
+                plt.title(f'Distribution of Feature Track Lengths (SLAM) - {sequence_name}')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                plt.xlim(1, x_limit)
+                plt.gca().xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+                histogram_file = os.path.join(metrics_save_dir, f"track_histogram_{sequence_name}.png")
+                print(f"Saving track histogram to {histogram_file}")
+                plt.savefig(histogram_file, dpi=150, bbox_inches='tight')
+                plt.close()
+
+                # Generate survival curve
+                print("Generating survival curve...")
+                plt.figure(figsize=(12, 8))
+
+                total_tracks = len(track_lengths)
+                unique_lengths = np.arange(1, max_length + 1)
+                survival_pct = []
+                for length in unique_lengths:
+                    num_surviving = np.sum(track_lengths >= length)
+                    survival_pct.append(100.0 * num_surviving / total_tracks)
+
+                survival_arr = np.array(survival_pct)
+
+                # Find where survival drops below 5% to set x-axis limit
+                idx_5pct = np.where(survival_arr <= 5)[0]
+                if len(idx_5pct) > 0:
+                    x_limit_survival = int(unique_lengths[idx_5pct[0]] * 1.2)
+                else:
+                    x_limit_survival = max_length
+                x_limit_survival = max(x_limit_survival, int(mean_track_length * 3))
+
+                plt.plot(unique_lengths, survival_pct, linewidth=2, color='blue')
+                plt.fill_between(unique_lengths, survival_pct, alpha=0.3)
+                plt.xlabel('Track Age (frames)')
+                plt.ylabel('% of Tracks Surviving')
+                plt.title(f'Track Survival Curve (SLAM) - {sequence_name}\nMean: {mean_track_length:.2f}')
+                plt.grid(True, alpha=0.3)
+                plt.xlim(1, x_limit_survival)
+                plt.ylim(0, 100)
+
+                # Add annotation for 2 frames survival
+                if len(survival_arr) >= 2:
+                    pct_at_2 = survival_arr[1]
+                    plt.axhline(pct_at_2, color='r', linestyle=':', alpha=0.5)
+                    plt.axvline(2, color='r', linestyle=':', alpha=0.5)
+                    plt.annotate(f'{pct_at_2:.1f}% survive 2 frames',
+                               xy=(2, pct_at_2),
+                               xytext=(2 + x_limit_survival*0.1, pct_at_2 + 5),
+                               arrowprops=dict(arrowstyle='->', color='red'),
+                               fontsize=10, color='red')
+
+                plt.gca().xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+                survival_file = os.path.join(metrics_save_dir, f"track_survival_{sequence_name}.png")
+                print(f"Saving survival curve to {survival_file}")
+                plt.savefig(survival_file, dpi=150, bbox_inches='tight')
+                plt.close()
+
+                # Save track statistics to JSON
+                track_stats = {
+                    'total_map_points': len(map_points),
+                    'total_valid_tracks': len(track_lengths),
+                    'mean_track_length': float(mean_track_length),
+                    'median_track_length': float(median_track_length),
+                    'std_track_length': float(std_track_length),
+                    'max_track_length': int(max_track_length),
+                    'min_track_length': int(min_track_length),
+                    'num_total_frames': num_total_frames,
+                    'num_processed_frames': num_frames,
+                }
+                track_stats_file = os.path.join(metrics_save_dir, f"track_stats_{sequence_name}.json")
+                with open(track_stats_file, 'w') as f:
+                    json.dump(track_stats, f, indent=2)
+                print(f"Saving track stats to {track_stats_file}")
+
+                print("=== Feature track analysis complete ===\n")
+            else:
+                print("No valid tracks found in map points")
+
+        except Exception as track_e:
+            print(f"Warning: Could not complete track longevity analysis: {track_e}")
+            print(f"traceback: {traceback.format_exc()}")
 
     except Exception as e:
         print("Exception while computing metrics: ", e)
