@@ -7,9 +7,9 @@ DETECTORS=("ORB" "SIFT" "ROOT_SIFT" "AKAZE" "BRISK")
 DATASETS=("clean" "rain" "fog")
 
 # Base paths
-CLEAN_PATH="/home/mohhef/projects/SLAMWeatherBench/datasets/kitti"
-RAIN_PATH="/home/mohhef/projects/SLAMWeatherBench/results/kitti_rain_physics_full"
-FOG_PATH="/home/mohhef/projects/SLAMWeatherBench/results/kitti_static_fog"
+CLEAN_PATH="/home/mohhef/projects/SLAMPerturbationLab/datasets/kitti"
+RAIN_PATH="/home/mohhef/projects/SLAMPerturbationLab/results/kitti_rain_physics_full"
+FOG_PATH="/home/mohhef/projects/SLAMPerturbationLab/results/kitti_static_fog"
 
 CONFIG_FILE="/home/mohhef/projects/pyslam/settings/KITTI04-12.yaml"
 RESULTS_BASE="/home/mohhef/projects/pyslam/results"
