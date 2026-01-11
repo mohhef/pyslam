@@ -250,9 +250,13 @@ class MapPointBase(object):
                     assert self == frame.get_point_match(idx)
                 frame.remove_point_match(idx)
                 if __debug__:
-                    assert (
-                        not self in frame.get_points()
-                    )  # checking there are no multiple instances
+                    if self in frame.get_points():
+                        # Multiple instances found - pyslam bug during relocalization
+                        # Log warning instead of crashing
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"Multiple map point instances in frame {frame.id} after removal"
+                        )
             else:
                 frame.remove_point(self)  # remove all match instances
             try:

@@ -273,6 +273,10 @@ if __name__ == "__main__":
     num_tracking_lost = 0
     num_frames = 0
 
+    # Per-frame feature statistics
+    per_frame_features = []  # number of features detected per frame
+    per_frame_matches = []   # number of matched keypoints per frame
+
     img_id = 0  # 210, 340, 400, 770   # you can start from a desired frame id if needed
     while not is_viewer_closed:
 
@@ -324,6 +328,12 @@ if __name__ == "__main__":
                             cv2.imshow("depth prediction", depth_img)
 
                     slam.track(img, img_right, depth, img_id, timestamp)  # main SLAM function
+
+                    # Collect per-frame feature statistics
+                    if slam.tracking.f_cur is not None and slam.tracking.f_cur.kps is not None:
+                        per_frame_features.append(len(slam.tracking.f_cur.kps))
+                    if slam.tracking.num_matched_kps is not None:
+                        per_frame_matches.append(slam.tracking.num_matched_kps)
 
                     # 3D display (map display)
                     if viewer3D:
@@ -429,73 +439,52 @@ if __name__ == "__main__":
     # compute metrics on the estimated final trajectory
     slam_initialized = slam.map.num_keyframes() > 0
 
+    # ============================================================
+    # Feature Track Longevity Analysis (RUN FIRST - before trajectory)
+    # This ensures track stats are saved even if trajectory retrieval hangs
+    # ============================================================
+    print("\n=== Building feature track statistics from SLAM map points ===")
+    sequence_name = config.dataset_settings.get('name', 'unknown')
+
     try:
-        # Check if SLAM has any keyframes before trying to get trajectory
-        if not slam_initialized:
-            print("WARNING: SLAM failed to initialize - no keyframes created")
-            print("This can happen with heavily perturbed images (rain/fog)")
-            print("Skipping trajectory metrics, but will still attempt track analysis...")
-        else:
-            est_poses, timestamps, ids = slam.get_final_trajectory()
-            is_final = not dataset.is_ok
-            assoc_timestamps, assoc_est_poses, assoc_gt_poses = find_poses_associations(
-                timestamps, est_poses, gt_timestamps, gt_poses
-            )
-            ape_stats, T_gt_est = eval_ate(
-                poses_est=assoc_est_poses,
-                poses_gt=assoc_gt_poses,
-                frame_ids=ids,
-                curr_frame_id=img_id,
-                is_final=is_final,
-                is_monocular=is_monocular,
-                save_dir=metrics_save_dir,
-            )
-            Printer.green(f"EVO stats: {json.dumps(ape_stats, indent=4)}")
+        map_points = slam.map.get_points()
+        print(f"Total map points: {len(map_points)}")
 
-            if final_trajectory_writer:
-                final_trajectory_writer.write_full_trajectory(est_poses, timestamps)
-                final_trajectory_writer.close_file()
-
-        other_metrics_file_path = os.path.join(metrics_save_dir, "other_metrics_info.txt")
-        with open(other_metrics_file_path, "w") as f:
-            f.write(f"num_total_frames: {num_total_frames}\n")
-            f.write(f"num_processed_frames: {num_frames}\n")
-            f.write(f"num_lost_frames: {num_tracking_lost}\n")
-            f.write(f"percent_lost: {num_tracking_lost/num_total_frames*100:.2f}\n")
-            f.write(f"slam_initialized: {slam_initialized}\n")
-
-        if slam_initialized:
-            evaluate_semantic_mapping(slam, dataset, metrics_save_dir)
-
-        # ============================================================
-        # Feature Track Longevity Analysis
-        # ============================================================
-        print("\n=== Building feature track statistics from SLAM map points ===")
-        sequence_name = config.dataset_settings.get('name', 'unknown')
-
-        try:
-            map_points = slam.map.get_points()
-            print(f"Total map points: {len(map_points)}")
-
-            if len(map_points) == 0:
-                print("No map points found - SLAM failed to create any 3D points")
-                print("Recording this as a complete SLAM failure")
-                # Save failure record
-                track_stats = {
-                    'slam_initialized': False,
-                    'total_map_points': 0,
-                    'total_valid_tracks': 0,
-                    'mean_track_length': 0,
-                    'num_total_frames': num_total_frames,
-                    'num_processed_frames': num_frames,
-                    'failure_reason': 'No map points created'
+        if len(map_points) == 0:
+            print("No map points found - SLAM failed to create any 3D points")
+            print("Recording this as a complete SLAM failure")
+            # Save failure record
+            track_stats = {
+                'slam_initialized': False,
+                'total_map_points': 0,
+                'total_valid_tracks': 0,
+                'mean_track_length': 0,
+                'num_total_frames': num_total_frames,
+                'num_processed_frames': num_frames,
+                'failure_reason': 'No map points created'
+            }
+            # Add per-frame feature statistics even for failed runs
+            if per_frame_features:
+                track_stats['features_per_frame'] = {
+                    'mean': float(np.mean(per_frame_features)),
+                    'median': float(np.median(per_frame_features)),
+                    'std': float(np.std(per_frame_features)),
+                    'min': int(np.min(per_frame_features)),
+                    'max': int(np.max(per_frame_features)),
                 }
-                track_stats_file = os.path.join(metrics_save_dir, f"track_stats_{sequence_name}.json")
-                with open(track_stats_file, 'w') as f:
-                    json.dump(track_stats, f, indent=2)
-                print(f"Saved failure stats to {track_stats_file}")
-                raise ValueError("No map points to analyze")
-
+            if per_frame_matches:
+                track_stats['matches_per_frame'] = {
+                    'mean': float(np.mean(per_frame_matches)),
+                    'median': float(np.median(per_frame_matches)),
+                    'std': float(np.std(per_frame_matches)),
+                    'min': int(np.min(per_frame_matches)),
+                    'max': int(np.max(per_frame_matches)),
+                }
+            track_stats_file = os.path.join(metrics_save_dir, f"track_stats_{sequence_name}.json")
+            with open(track_stats_file, 'w') as f:
+                json.dump(track_stats, f, indent=2)
+            print(f"Saved failure stats to {track_stats_file}")
+        else:
             # Calculate track lengths from frame_views
             track_lengths = []
             for point in map_points:
@@ -629,22 +618,90 @@ if __name__ == "__main__":
                     'num_total_frames': num_total_frames,
                     'num_processed_frames': num_frames,
                 }
+
+                # Add per-frame feature statistics
+                if per_frame_features:
+                    track_stats['features_per_frame'] = {
+                        'mean': float(np.mean(per_frame_features)),
+                        'median': float(np.median(per_frame_features)),
+                        'std': float(np.std(per_frame_features)),
+                        'min': int(np.min(per_frame_features)),
+                        'max': int(np.max(per_frame_features)),
+                    }
+                if per_frame_matches:
+                    track_stats['matches_per_frame'] = {
+                        'mean': float(np.mean(per_frame_matches)),
+                        'median': float(np.median(per_frame_matches)),
+                        'std': float(np.std(per_frame_matches)),
+                        'min': int(np.min(per_frame_matches)),
+                        'max': int(np.max(per_frame_matches)),
+                    }
                 track_stats_file = os.path.join(metrics_save_dir, f"track_stats_{sequence_name}.json")
                 with open(track_stats_file, 'w') as f:
                     json.dump(track_stats, f, indent=2)
                 print(f"Saving track stats to {track_stats_file}")
 
+                # Save raw track data for comparison plots across perturbations
+                tracks_data = {
+                    'tracks': {str(i): {'age': int(length)} for i, length in enumerate(track_lengths)}
+                }
+                tracks_file = os.path.join(metrics_save_dir, f"tracks_{sequence_name}.json")
+                with open(tracks_file, 'w') as f:
+                    json.dump(tracks_data, f)
+                print(f"Saving raw track data to {tracks_file}")
+
                 print("=== Feature track analysis complete ===\n")
             else:
                 print("No valid tracks found in map points")
 
-        except Exception as track_e:
-            print(f"Warning: Could not complete track longevity analysis: {track_e}")
-            print(f"traceback: {traceback.format_exc()}")
-
-    except Exception as e:
-        print("Exception while computing metrics: ", e)
+    except Exception as track_e:
+        print(f"Warning: Could not complete track longevity analysis: {track_e}")
         print(f"traceback: {traceback.format_exc()}")
+
+    # ============================================================
+    # Trajectory Retrieval and Metrics (DISABLED - only care about tracks)
+    # ============================================================
+    # try:
+    #     # Check if SLAM has any keyframes before trying to get trajectory
+    #     if not slam_initialized:
+    #         print("WARNING: SLAM failed to initialize - no keyframes created")
+    #         print("This can happen with heavily perturbed images (rain/fog)")
+    #         print("Skipping trajectory metrics...")
+    #     else:
+    #         est_poses, timestamps, ids = slam.get_final_trajectory()
+    #         is_final = not dataset.is_ok
+    #         assoc_timestamps, assoc_est_poses, assoc_gt_poses = find_poses_associations(
+    #             timestamps, est_poses, gt_timestamps, gt_poses
+    #         )
+    #         ape_stats, T_gt_est = eval_ate(
+    #             poses_est=assoc_est_poses,
+    #             poses_gt=assoc_gt_poses,
+    #             frame_ids=ids,
+    #             curr_frame_id=img_id,
+    #             is_final=is_final,
+    #             is_monocular=is_monocular,
+    #             save_dir=metrics_save_dir,
+    #         )
+    #         Printer.green(f"EVO stats: {json.dumps(ape_stats, indent=4)}")
+    #
+    #         if final_trajectory_writer:
+    #             final_trajectory_writer.write_full_trajectory(est_poses, timestamps)
+    #             final_trajectory_writer.close_file()
+    #
+    #     other_metrics_file_path = os.path.join(metrics_save_dir, "other_metrics_info.txt")
+    #     with open(other_metrics_file_path, "w") as f:
+    #         f.write(f"num_total_frames: {num_total_frames}\n")
+    #         f.write(f"num_processed_frames: {num_frames}\n")
+    #         f.write(f"num_lost_frames: {num_tracking_lost}\n")
+    #         f.write(f"percent_lost: {num_tracking_lost/num_total_frames*100:.2f}\n")
+    #         f.write(f"slam_initialized: {slam_initialized}\n")
+    #
+    #     if slam_initialized:
+    #         evaluate_semantic_mapping(slam, dataset, metrics_save_dir)
+    #
+    # except Exception as e:
+    #     print("Exception while computing trajectory metrics: ", e)
+    #     print(f"traceback: {traceback.format_exc()}")
 
     # close stuff
     slam.quit()

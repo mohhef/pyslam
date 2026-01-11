@@ -100,6 +100,11 @@ def dataset_factory(config: "Config") -> Dataset:
         Printer.green(f'dataset_factory - start_frame_id: {dataset_settings["start_frame_id"]}')
         start_frame_id = int(dataset_settings["start_frame_id"])
 
+    max_frames = None
+    if "max_frames" in dataset_settings:
+        Printer.green(f'dataset_factory - max_frames: {dataset_settings["max_frames"]}')
+        max_frames = int(dataset_settings["max_frames"])
+
     if "associations" in dataset_settings:
         associations = dataset_settings["associations"]
     if "timestamps" in dataset_settings:
@@ -200,5 +205,12 @@ def dataset_factory(config: "Config") -> Dataset:
         )
 
     dataset.minimal_config = MinimalDatasetConfig(config=config)
+
+    # Apply max_frames limit if specified
+    if max_frames is not None and dataset is not None:
+        if hasattr(dataset, 'num_frames') and dataset.num_frames > max_frames:
+            Printer.yellow(f'dataset_factory - limiting frames from {dataset.num_frames} to {max_frames}')
+            dataset.num_frames = max_frames
+            dataset.max_frame_id = max_frames
 
     return dataset
