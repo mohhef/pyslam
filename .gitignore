@@ -40,6 +40,7 @@ map.json
 data/ORBvoc.txt
 data/ORBvoc.dbow2
 data/ORBvoc.dbow3
+data/ORBvoc.dbow3*.part
 data/orbvoc.dbow3
 data/ORBvoc_test.txt 
 data/VLADvoc_orb.txt
@@ -53,8 +54,15 @@ data/skyseg.onnx
 
 leftover/
 results/
+install_log.txt
 
 thirdparty/pydbow3/ORBvoc.txt
+thirdparty/ml_depth_pro/
+thirdparty/depth_anything_v2/
+thirdparty/raft_stereo/
+thirdparty/crestereo/
+thirdparty/crestereo_pytorch/
+thirdparty/gtsam_local/
 
 thirdparty/protoc 
 
