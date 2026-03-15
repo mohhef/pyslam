@@ -6,13 +6,17 @@
 DETECTORS=("ORB" "SIFT" "ROOT_SIFT" "AKAZE" "BRISK")
 DATASETS=("clean" "rain" "fog")
 
-# Base paths
-CLEAN_PATH="/home/mohhef/projects/SLAMPerturbationLab/datasets/kitti"
-RAIN_PATH="/home/mohhef/projects/SLAMPerturbationLab/results/kitti_rain_physics_full"
-FOG_PATH="/home/mohhef/projects/SLAMPerturbationLab/results/kitti_static_fog"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYSLAM_ROOT="$SCRIPT_DIR"
+SLAMLAB_ROOT="$(cd "$PYSLAM_ROOT/../../.." && pwd)"
 
-CONFIG_FILE="/home/mohhef/projects/pyslam/settings/KITTI04-12.yaml"
-RESULTS_BASE="/home/mohhef/projects/pyslam/results"
+# Base paths
+CLEAN_PATH="$SLAMLAB_ROOT/datasets/kitti"
+RAIN_PATH="$SLAMLAB_ROOT/results/kitti_rain_physics_full"
+FOG_PATH="$SLAMLAB_ROOT/results/kitti_static_fog"
+
+CONFIG_FILE="$PYSLAM_ROOT/settings/KITTI04-12.yaml"
+RESULTS_BASE="$PYSLAM_ROOT/results"
 
 for detector in "${DETECTORS[@]}"; do
     echo "========================================"
@@ -27,15 +31,15 @@ for detector in "${DETECTORS[@]}"; do
 
         # Update config with current dataset path
         if [ "$dataset" == "clean" ]; then
-            sed -i "s|base_path:.*kitti.*|base_path: $CLEAN_PATH|" /home/mohhef/projects/pyslam/config.yaml
+            sed -i "s|base_path:.*kitti.*|base_path: $CLEAN_PATH|" "$PYSLAM_ROOT/config.yaml"
         elif [ "$dataset" == "rain" ]; then
-            sed -i "s|base_path:.*kitti.*|base_path: $RAIN_PATH|" /home/mohhef/projects/pyslam/config.yaml
+            sed -i "s|base_path:.*kitti.*|base_path: $RAIN_PATH|" "$PYSLAM_ROOT/config.yaml"
         elif [ "$dataset" == "fog" ]; then
-            sed -i "s|base_path:.*kitti.*|base_path: $FOG_PATH|" /home/mohhef/projects/pyslam/config.yaml
+            sed -i "s|base_path:.*kitti.*|base_path: $FOG_PATH|" "$PYSLAM_ROOT/config.yaml"
         fi
 
         # Run VO
-        cd /home/mohhef/projects/pyslam
+        cd "$PYSLAM_ROOT"
         python main_vo.py
 
         # Rename output files to include detector and dataset

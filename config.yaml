@@ -19,17 +19,17 @@ KITTI_DATASET:
   sensor_type: stereo # Here, 'sensor_type' can be 'mono' or 'stereo'
   #
   # Option 1: Clean baseline sequence 04
-  # base_path: /home/mohhef/projects/SLAMPerturbationLab/results/kitti_rain_physics_full
+  # base_path: ../../../results/kitti_rain_physics_full
   # name: '04'
   # settings: settings/KITTI04-12.yaml
   #
   # Option 2: Rain perturbed sequence 04
-  # base_path: /home/mohhef/projects/SLAMPerturbationLab/results/kitti_rain_physics_full
+  # base_path: ../../../results/kitti_rain_physics_full
   # name: '04'
   # settings: settings/KITTI04-12.yaml
   #
   # Option 3: Fog perturbed sequence 04
-  base_path: /home/mohhef/projects/SLAMPerturbationLab/results/kitti_rain_physics_full
+  base_path: ../../../results/kitti_rain_physics_full
   name: '04'
   settings: settings/KITTI04-12.yaml
   #
@@ -128,11 +128,11 @@ VIDEO_DATASET:
   type: video
   sensor_type: mono   # Here, 'sensor_type' can be only 'mono' 
   #
-  # base_path: /home/mohhef/projects/SLAMPerturbationLab/results/kitti_rain_physics_full
+  # base_path: ../../../results/kitti_rain_physics_full
   # settings: settings/KITTI00-02.yaml
   # name: video.mp4
   #
-  base_path: /home/mohhef/projects/SLAMPerturbationLab/results/kitti_rain_physics_full
+  base_path: ../../../results/kitti_rain_physics_full
   settings: settings/KITTI04-12.yaml
   name: video_color.mp4
   #
@@ -147,7 +147,7 @@ VIDEO_DATASET:
 FOLDER_DATASET:
   type: folder 
   sensor_type: mono   # Here, 'sensor_type' can be only 'mono' 
-  base_path: /home/mohhef/projects/SLAMPerturbationLab/results/kitti_rain_physics_full
+  base_path: ../../../results/kitti_rain_physics_full
   # 'name' is used for specifying a glob pattern, e.g. *png, *jpeg, etc...
   name: '*png'  
   settings: settings/KITTI00-02.yaml
